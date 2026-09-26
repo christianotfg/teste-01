@@ -28,7 +28,7 @@ jobs:
             "https://api.vercel.com/v9/projects/$REPO_NAME")
           
           if [ "$STATUS_CODE" -eq 200 ]; then
-            echo "✅ Projeto '$REPO_NAME' já existe na Vercel. Nenhuma ação necessária."
+            echo "✅ Projeto '$REPO_NAME' já existe na Vercel."
           elif [ "$STATUS_CODE" -eq 404 ]; then
             echo "⚠️ Projeto '$REPO_NAME' não encontrado. Criando e vinculando ao GitHub..."
             
@@ -57,4 +57,24 @@ jobs:
           else
             echo "❌ Erro inesperado ao consultar a API da Vercel (Status $STATUS_CODE)"
             exit 1
+          fi
+
+          echo "⏳ Buscando a URL de produção do projeto..."
+          sleep 3 # Pequeno delay para garantir que a Vercel assinalou os domínios
+          
+          DOMAINS_JSON=$(curl -s -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v9/projects/$REPO_NAME/domains")
+          
+          # Extrai o primeiro domínio da lista usando jq
+          PROJECT_URL=$(echo "$DOMAINS_JSON" | jq -r '.domains[0].name // empty')
+          
+          # Cria o relatório visual no GitHub Actions
+          echo "### 🚀 Status do Projeto Vercel" >> $GITHUB_STEP_SUMMARY
+          
+          if [ -n "$PROJECT_URL" ] && [ "$PROJECT_URL" != "null" ]; then
+            echo "🌐 **Vercel Host:** [https://$PROJECT_URL](https://$PROJECT_URL)"
+            echo "✅ **Repositório:** $REPO_FULL_NAME" >> $GITHUB_STEP_SUMMARY
+            echo "🔗 **URL de Produção:** [https://$PROJECT_URL](https://$PROJECT_URL)" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "⚠️ Não foi possível recuperar a URL da Vercel no momento."
+            echo "✅ O projeto foi verificado/criado, mas a URL ainda está sendo gerada pela Vercel." >> $GITHUB_STEP_SUMMARY
           fi
