@@ -1,4 +1,4 @@
-name: Auto Setup Vercel Project
+name: Vercel Setup
 
 on:
   push:
@@ -6,68 +6,97 @@ on:
       - main
 
 jobs:
-  setup-vercel:
+  check-vercel:
+    name: Check Vercel
     runs-on: ubuntu-latest
+    outputs:
+      project_exists: ${{ steps.check.outputs.project_exists }}
     steps:
-      - name: Check and Create Vercel Project
+      - name: Check if project exists
+        id: check
         env:
           VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
           REPO_NAME: ${{ github.event.repository.name }}
-          REPO_FULL_NAME: ${{ github.repository }}
         run: |
           if [ -z "$VERCEL_TOKEN" ]; then
-            echo "⚠️ VERCEL_TOKEN não está configurado no GitHub Secrets. Pulando etapa de criação na Vercel."
-            exit 0
+            echo "⚠️ VERCEL_TOKEN não está configurado no GitHub Secrets."
+            exit 1
           fi
           
           echo "🔍 Verificando se o projeto Vercel '$REPO_NAME' já existe..."
-          
-          # Tenta buscar o projeto na Vercel
           STATUS_CODE=$(curl -s -o /dev/null -w "%{http_code}" \
             -H "Authorization: Bearer $VERCEL_TOKEN" \
             "https://api.vercel.com/v9/projects/$REPO_NAME")
           
           if [ "$STATUS_CODE" -eq 200 ]; then
             echo "✅ Projeto '$REPO_NAME' já existe na Vercel."
+            echo "project_exists=true" >> $GITHUB_OUTPUT
           elif [ "$STATUS_CODE" -eq 404 ]; then
-            echo "⚠️ Projeto '$REPO_NAME' não encontrado. Criando e vinculando ao GitHub..."
-            
-            CREATE_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "https://api.vercel.com/v9/projects" \
-              -H "Authorization: Bearer $VERCEL_TOKEN" \
-              -H "Content-Type: application/json" \
-              -d '{
-                "name": "'"$REPO_NAME"'",
-                "framework": "nextjs",
-                "gitRepository": {
-                  "type": "github",
-                  "repo": "'"$REPO_FULL_NAME"'"
-                }
-              }')
-              
-            HTTP_STATUS=$(echo "$CREATE_RESPONSE" | grep "HTTP_STATUS:" | cut -d':' -f2)
-            BODY=$(echo "$CREATE_RESPONSE" | sed -e 's/HTTP_STATUS\:.*//g')
-            
-            if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
-              echo "✅ Sucesso! O projeto foi criado na Vercel e o GitHub foi vinculado."
-            else
-              echo "❌ Falha ao criar o projeto (Status $HTTP_STATUS):"
-              echo "$BODY"
-              exit 1
-            fi
+            echo "⚠️ Projeto '$REPO_NAME' não encontrado."
+            echo "project_exists=false" >> $GITHUB_OUTPUT
           else
-            echo "❌ Erro inesperado ao consultar a API da Vercel (Status $STATUS_CODE)"
+            echo "❌ Erro inesperado ao consultar a API (Status $STATUS_CODE)"
             exit 1
           fi
 
-          echo "⏳ Buscando a URL de produção do projeto..."
-          sleep 3 # Pequeno delay para garantir que a Vercel assinalou os domínios
+  create-project:
+    name: Create project
+    needs: check-vercel
+    if: needs.check-vercel.outputs.project_exists == 'false'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Create Vercel Project
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        run: |
+          echo "🚀 Criando projeto e vinculando ao GitHub..."
+          CREATE_RESPONSE=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "https://api.vercel.com/v9/projects" \
+            -H "Authorization: Bearer $VERCEL_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d '{
+              "name": "'"$REPO_NAME"'",
+              "framework": "nextjs",
+              "gitRepository": {
+                "type": "github",
+                "repo": "'"$REPO_FULL_NAME"'"
+              }
+            }')
+            
+          HTTP_STATUS=$(echo "$CREATE_RESPONSE" | grep "HTTP_STATUS:" | cut -d':' -f2)
+          BODY=$(echo "$CREATE_RESPONSE" | sed -e 's/HTTP_STATUS\:.*//g')
           
+          if [ "$HTTP_STATUS" -eq 200 ] || [ "$HTTP_STATUS" -eq 201 ]; then
+            echo "✅ Sucesso! O projeto foi criado na Vercel."
+          else
+            echo "❌ Falha ao criar o projeto (Status $HTTP_STATUS):"
+            echo "$BODY"
+            exit 1
+          fi
+
+  show-project:
+    name: Show project
+    needs: [check-vercel, create-project]
+    if: ${{ !failure() && !cancelled() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Wait 10 seconds
+        run: |
+          echo "⏳ Aguardando 10 segundos para a Vercel assinalar os domínios..."
+          sleep 10
+          
+      - name: Fetch and display project URL
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          REPO_NAME: ${{ github.event.repository.name }}
+          REPO_FULL_NAME: ${{ github.repository }}
+        run: |
+          echo "🔍 Buscando a URL de produção do projeto..."
           DOMAINS_JSON=$(curl -s -H "Authorization: Bearer $VERCEL_TOKEN" "https://api.vercel.com/v9/projects/$REPO_NAME/domains")
           
-          # Extrai o primeiro domínio da lista usando jq
           PROJECT_URL=$(echo "$DOMAINS_JSON" | jq -r '.domains[0].name // empty')
           
-          # Cria o relatório visual no GitHub Actions
           echo "### 🚀 Status do Projeto Vercel" >> $GITHUB_STEP_SUMMARY
           
           if [ -n "$PROJECT_URL" ] && [ "$PROJECT_URL" != "null" ]; then
@@ -76,5 +105,5 @@ jobs:
             echo "🔗 **URL de Produção:** [https://$PROJECT_URL](https://$PROJECT_URL)" >> $GITHUB_STEP_SUMMARY
           else
             echo "⚠️ Não foi possível recuperar a URL da Vercel no momento."
-            echo "✅ O projeto foi verificado/criado, mas a URL ainda está sendo gerada pela Vercel." >> $GITHUB_STEP_SUMMARY
+            echo "✅ O projeto foi verificado/criado, mas a URL ainda não retornou da API." >> $GITHUB_STEP_SUMMARY
           fi
